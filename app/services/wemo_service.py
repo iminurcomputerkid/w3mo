@@ -6,12 +6,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import pywemo
 from pywemo.exceptions import HTTPException, PyWeMoException
 
 from app.config import Settings
 from app.schemas import DeviceView, DevicesResponse, InsightMetrics
+from app.services.known_device_store import KnownDeviceRecord, KnownDeviceStore
 from app.services.manual_device_store import ManualDeviceStore
 
 LOG = logging.getLogger(__name__)
@@ -49,22 +51,62 @@ class ManagedDevice:
 class WemoService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._store = ManualDeviceStore(settings.manual_addresses_file)
+        self._manual_store = ManualDeviceStore(settings.manual_addresses_file)
+        self._known_store = KnownDeviceStore(settings.known_devices_file)
         self._devices: dict[str, ManagedDevice] = {}
         self._lock = RLock()
         self._last_discovery: datetime | None = None
         self._last_issues: list[str] = []
         self._manual_addresses = self._load_manual_addresses()
+        self._known_devices = self._load_known_device_records()
+        self._restore_known_devices()
 
     def _load_manual_addresses(self) -> list[str]:
         configured = {
             item.strip() for item in self.settings.manual_addresses if item.strip()
         }
-        stored = {item.strip() for item in self._store.load() if item.strip()}
+        stored = {
+            item.strip() for item in self._manual_store.load() if item.strip()
+        }
         addresses = sorted(configured | stored, key=str.lower)
         if addresses:
-            self._store.save(addresses)
+            self._manual_store.save(addresses)
         return addresses
+
+    def _load_known_device_records(self) -> dict[str, KnownDeviceRecord]:
+        records = self._known_store.load()
+        return {record.device_id: record for record in records if record.device_id}
+
+    def _restore_known_devices(self) -> None:
+        restored_count = 0
+        for record in list(self._known_devices.values()):
+            device = self._load_device_from_record(record)
+            if device is None:
+                continue
+            if not self._is_supported_switch(device):
+                LOG.info(
+                    "Skipping unsupported saved device %s (%s)",
+                    record.device_id,
+                    device.__class__.__name__,
+                )
+                continue
+
+            managed = ManagedDevice(
+                device=device,
+                discovery_method=record.discovery_method,
+                status_message="Loaded from saved devices",
+            )
+            managed.seen_in_latest_discovery = True
+            restored_device_id = self._device_id(device)
+            if restored_device_id != record.device_id:
+                self._known_devices.pop(record.device_id, None)
+            self._devices[restored_device_id] = managed
+            self._upsert_known_device_record(managed)
+            restored_count += 1
+
+        if restored_count:
+            self._persist_known_devices()
+            LOG.info("Restored %s devices from saved cache", restored_count)
 
     def list_manual_addresses(self) -> list[str]:
         with self._lock:
@@ -80,7 +122,7 @@ class WemoService:
             }:
                 self._manual_addresses.append(normalized)
                 self._manual_addresses.sort(key=str.lower)
-                self._store.save(self._manual_addresses)
+                self._manual_store.save(self._manual_addresses)
             return list(self._manual_addresses)
 
     def remove_manual_address(self, address: str) -> list[str]:
@@ -92,7 +134,7 @@ class WemoService:
                 if item.lower() != normalized.lower()
             ]
             self._manual_addresses = remaining
-            self._store.save(self._manual_addresses)
+            self._manual_store.save(self._manual_addresses)
             return list(self._manual_addresses)
 
     def discover_devices(self, refresh_after: bool = True) -> DevicesResponse:
@@ -110,6 +152,9 @@ class WemoService:
             for device in self._discover_manual(issues):
                 self._remember_discovery(device, "manual", discovered)
 
+            for device in self._discover_saved(issues):
+                self._remember_discovery(device, "saved", discovered)
+
             if refresh_after:
                 for managed in discovered.values():
                     self._refresh_managed(managed)
@@ -122,6 +167,7 @@ class WemoService:
 
             self._last_discovery = datetime.now(timezone.utc)
             self._last_issues = issues
+            self._persist_known_devices()
             LOG.info(
                 "Discovery complete: %s devices, %s issues",
                 len(self._devices),
@@ -228,32 +274,58 @@ class WemoService:
             return []
 
     def _discover_manual(self, issues: list[str]) -> list[Any]:
+        return self._discover_from_addresses(
+            self._manual_addresses,
+            issues,
+            source_label="Manual discovery",
+            context_label="manual discovery",
+        )
+
+    def _discover_saved(self, issues: list[str]) -> list[Any]:
+        manual_addresses = {item.lower() for item in self._manual_addresses}
+        addresses = [
+            address
+            for address in self._saved_addresses()
+            if address.lower() not in manual_addresses
+        ]
+        return self._discover_from_addresses(
+            addresses,
+            issues,
+            source_label="Saved device discovery",
+            context_label="saved device discovery",
+        )
+
+    def _discover_from_addresses(
+        self,
+        addresses: list[str],
+        issues: list[str],
+        source_label: str,
+        context_label: str,
+    ) -> list[Any]:
         devices: list[Any] = []
-        for address in self._manual_addresses:
+        for address in addresses:
             try:
                 url = pywemo.setup_url_for_address(address)
                 if not url:
                     issues.append(
-                        f"Manual discovery could not find setup.xml for {address}."
+                        f"{source_label} could not find setup.xml for {address}."
                     )
                     continue
                 device = pywemo.device_from_description(url)
                 if device is None:
                     issues.append(
-                        f"Manual discovery returned no device for {address}."
+                        f"{source_label} returned no device for {address}."
                     )
                     continue
                 if not self._is_supported_switch(device):
                     issues.append(
-                        f"Skipping unsupported WeMo device at {address}: "
+                        f"{source_label} skipping unsupported WeMo device at {address}: "
                         f"{device.__class__.__name__}."
                     )
                     continue
                 devices.append(device)
             except Exception as exc:
-                message = self._format_error(
-                    exc, f"manual discovery for {address}"
-                )
+                message = self._format_error(exc, f"{context_label} for {address}")
                 issues.append(message)
                 LOG.warning(message)
         return devices
@@ -277,6 +349,7 @@ class WemoService:
             existing.last_error = None
             existing.status_message = "Discovered"
             discovered[device_id] = existing
+            self._upsert_known_device_record(existing)
             return
 
         managed = ManagedDevice(
@@ -286,6 +359,7 @@ class WemoService:
         )
         self._devices[device_id] = managed
         discovered[device_id] = managed
+        self._upsert_known_device_record(managed)
 
     def _refresh_managed(
         self, managed: ManagedDevice, raise_on_error: bool = False
@@ -419,6 +493,73 @@ class WemoService:
             insight=insight,
         )
 
+    def _saved_addresses(self) -> list[str]:
+        addresses: list[str] = []
+        seen: set[str] = set()
+        for record in sorted(
+            self._known_devices.values(),
+            key=lambda item: (item.name.lower(), item.host.lower()),
+        ):
+            address = record.host.strip()
+            if not address:
+                continue
+            normalized = address.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            addresses.append(address)
+        return addresses
+
+    def _load_device_from_record(self, record: KnownDeviceRecord) -> Any | None:
+        try:
+            device = pywemo.device_from_description(record.location)
+        except Exception as exc:
+            LOG.info(
+                "Saved device description lookup failed for %s: %s",
+                record.device_id,
+                self._format_error(exc, "saved device restore"),
+            )
+            device = None
+        if device is not None:
+            return device
+
+        try:
+            url = pywemo.setup_url_for_address(record.host)
+            if not url:
+                return None
+            return pywemo.device_from_description(url)
+        except Exception as exc:
+            LOG.info(
+                "Saved device address lookup failed for %s (%s): %s",
+                record.device_id,
+                record.host,
+                self._format_error(exc, "saved device restore"),
+            )
+            return None
+
+    def _upsert_known_device_record(self, managed: ManagedDevice) -> None:
+        device = managed.device
+        location = getattr(getattr(device, "session", None), "url", "")
+        host = getattr(device, "host", "") or self._host_from_location(location)
+        if not location or not host:
+            return
+        self._known_devices[self._device_id(device)] = KnownDeviceRecord(
+            device_id=self._device_id(device),
+            name=device.name,
+            host=host,
+            port=int(getattr(device, "port", 0) or 0),
+            location=location,
+            discovery_method=managed.discovery_method,
+            type_name=device.__class__.__name__,
+            model_name=getattr(device, "model_name", ""),
+            serial_number=getattr(device, "serial_number", ""),
+            mac=getattr(device, "mac", ""),
+            last_seen=self._isoformat(managed.last_seen),
+        )
+
+    def _persist_known_devices(self) -> None:
+        self._known_store.save(list(self._known_devices.values()))
+
     def _get_managed(self, device_id: str) -> ManagedDevice:
         try:
             return self._devices[device_id]
@@ -444,6 +585,11 @@ class WemoService:
         methods = {part.strip() for part in current.split("+") if part.strip()}
         methods.add(new)
         return "+".join(sorted(methods))
+
+    @staticmethod
+    def _host_from_location(location: str) -> str:
+        parsed = urlparse(location)
+        return parsed.hostname or ""
 
     @staticmethod
     def _isoformat(value: datetime | None) -> str | None:

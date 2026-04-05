@@ -7,6 +7,7 @@
 - FastAPI backend with a responsive single-page dashboard
 - LAN discovery with `pywemo`
 - Manual device enrollment by IP address or hostname when SSDP discovery misses a device
+- Saved device cache that reloads known switches at startup and reuses them during later scans
 - Per-device controls for on, off, refresh, and dimmer brightness
 - Device metadata display including IP, model, firmware, MAC, and Insight metrics when available
 - Local schedule engine for:
@@ -76,7 +77,9 @@ When the app starts, it can automatically scan the LAN for WeMo devices. The das
 - Click `Refresh States` to poll current state from already-known devices
 - If a device is not discovered automatically, add its IP address or hostname in the `Manual Devices` section
 
-Manual devices are stored locally in `data/manual_addresses.json` and reused on future discovery runs.
+Manual addresses are stored locally in `data/manual_addresses.json`.
+
+Known devices discovered through SSDP or manual addressing are cached in `data/known_devices.json`, loaded during startup, and retried during later discovery runs even when SSDP misses them.
 
 ### Device control
 
@@ -215,6 +218,7 @@ sudo systemctl status w3mo
 - The scheduler is local and not pushed into the device itself
 - Schedules only execute while the app process is running
 - SSDP discovery can be unreliable on some networks, so manual addressing is included intentionally
+- Known device caching helps with flaky discovery, but stale saved entries can still remain if a device is removed from your network
 - The app uses polling and explicit refresh instead of relying on local event subscription callbacks
 
 ## Source Of Truth

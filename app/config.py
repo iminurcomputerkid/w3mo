@@ -39,6 +39,7 @@ class Settings:
     base_dir: Path = Path(__file__).resolve().parent.parent
     data_dir: Path = None  # type: ignore[assignment]
     manual_addresses_file: Path = None  # type: ignore[assignment]
+    known_devices_file: Path = None  # type: ignore[assignment]
     schedules_file: Path = None  # type: ignore[assignment]
     manual_addresses: list[str] = None  # type: ignore[assignment]
 
@@ -47,6 +48,8 @@ class Settings:
             self.data_dir = self.base_dir / "data"
         if self.manual_addresses_file is None:
             self.manual_addresses_file = self.data_dir / "manual_addresses.json"
+        if self.known_devices_file is None:
+            self.known_devices_file = self.data_dir / "known_devices.json"
         if self.schedules_file is None:
             self.schedules_file = self.data_dir / "schedules.json"
         if self.manual_addresses is None:
