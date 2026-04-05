@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ app_title }}</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body data-poll-seconds="{{ device_poll_seconds }}">
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Local-first WeMo control</p>
+          <h1>{{ app_title }}</h1>
+          <p class="hero-text">
+            Discover Belkin WeMo switches on your LAN, inspect device health,
+            and control power state without any cloud dependency.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="discover-button" class="button button-primary">
+            Refresh Devices
+          </button>
+          <button id="refresh-button" class="button button-secondary">
+            Refresh States
+          </button>
+        </div>
+      </header>
+
+      <section class="summary-grid" id="summary-grid">
+        <article class="summary-card">
+          <span class="summary-label">Devices</span>
+          <strong id="total-devices">0</strong>
+        </article>
+        <article class="summary-card">
+          <span class="summary-label">Reachable</span>
+          <strong id="reachable-devices">0</strong>
+        </article>
+        <article class="summary-card">
+          <span class="summary-label">Last Discovery</span>
+          <strong id="last-discovery">Never</strong>
+        </article>
+      </section>
+
+      <section id="alerts" class="alerts" aria-live="polite"></section>
+
+      <section class="manual-panel">
+        <div class="panel-heading">
+          <h2>Manual Devices</h2>
+          <p>Add an IP or hostname if SSDP discovery misses a switch.</p>
+        </div>
+        <form id="manual-device-form" class="manual-form">
+          <input
+            id="manual-device-input"
+            class="manual-input"
+            type="text"
+            placeholder="192.168.1.50 or wemo-driveway.local"
+            autocomplete="off"
+          />
+          <button id="manual-device-submit" class="button button-primary" type="submit">
+            Add Device
+          </button>
+        </form>
+        <div id="manual-addresses" class="manual-addresses"></div>
+      </section>
+
+      <section class="devices-panel">
+        <div class="panel-heading">
+          <h2>Switches</h2>
+          <p id="panel-status">Loading devices...</p>
+        </div>
+        <div id="devices-grid" class="devices-grid"></div>
+      </section>
+
+      <section class="scheduler-panel">
+        <div class="panel-heading">
+          <h2>Scheduler</h2>
+          <p>Create immediate timers or daily automations.</p>
+        </div>
+        <div class="scheduler-intro">
+          <div class="scheduler-badge">Local automation</div>
+          <p>
+            Use timers for fans and temporary loads, or daily rules for lights
+            and dimmers. Daily rules can be edited after creation, and active
+            timers can be extended or shortened without recreating them.
+          </p>
+        </div>
+        <form id="schedule-form" class="schedule-form">
+          <input id="schedule-edit-id" type="hidden" />
+          <input id="schedule-name" class="manual-input" type="text" placeholder="Optional schedule name" />
+          <select id="schedule-device" class="manual-input"></select>
+          <select id="schedule-type" class="manual-input">
+            <option value="countdown">Run Now For Duration</option>
+            <option value="daily">Daily At Time</option>
+          </select>
+          <select id="schedule-action" class="manual-input">
+            <option value="on">Turn On</option>
+            <option value="off">Turn Off</option>
+            <option value="brightness">Set Brightness</option>
+          </select>
+          <input id="schedule-time" class="manual-input" type="time" />
+          <input id="schedule-duration" class="manual-input" type="number" min="1" max="1440" placeholder="Duration in minutes" />
+          <div id="schedule-weekdays-wrap" class="schedule-weekdays-wrap">
+            <span>Weekdays</span>
+            <div class="weekday-grid">
+              <label><input type="checkbox" class="schedule-weekday" value="mon" checked />Mon</label>
+              <label><input type="checkbox" class="schedule-weekday" value="tue" checked />Tue</label>
+              <label><input type="checkbox" class="schedule-weekday" value="wed" checked />Wed</label>
+              <label><input type="checkbox" class="schedule-weekday" value="thu" checked />Thu</label>
+              <label><input type="checkbox" class="schedule-weekday" value="fri" checked />Fri</label>
+              <label><input type="checkbox" class="schedule-weekday" value="sat" checked />Sat</label>
+              <label><input type="checkbox" class="schedule-weekday" value="sun" checked />Sun</label>
+            </div>
+          </div>
+          <div id="schedule-brightness-wrap" class="schedule-brightness-wrap" hidden>
+            <label for="schedule-brightness">Brightness</label>
+            <input id="schedule-brightness" type="range" min="0" max="100" value="60" />
+            <strong id="schedule-brightness-value">60%</strong>
+          </div>
+          <div class="schedule-form-actions">
+            <button id="schedule-submit" class="button button-primary" type="submit">
+              Save Schedule
+            </button>
+            <button id="schedule-cancel-edit" class="button button-secondary" type="button" hidden>
+              Cancel Edit
+            </button>
+          </div>
+        </form>
+        <div id="schedules-list" class="schedules-list"></div>
+        <div class="timeline-panel">
+          <div class="panel-heading">
+            <h2>Next 24 Hours</h2>
+            <p>Upcoming runs and auto-off events.</p>
+          </div>
+          <div id="schedule-timeline" class="schedule-timeline"></div>
+        </div>
+      </section>
+    </div>
+
+    <template id="device-card-template">
+      <article class="device-card">
+        <div class="device-card-header">
+          <div>
+            <p class="device-type"></p>
+            <h3 class="device-name"></h3>
+          </div>
+          <span class="state-pill"></span>
+        </div>
+        <p class="device-status"></p>
+        <dl class="meta-grid"></dl>
+        <div class="brightness-control" hidden>
+          <div class="brightness-header">
+            <span>Brightness</span>
+            <strong class="brightness-value">0%</strong>
+          </div>
+          <input
+            class="brightness-slider"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value="0"
+          />
+          <button class="button button-ghost action-brightness-apply">
+            Apply Brightness
+          </button>
+        </div>
+        <div class="device-actions">
+          <button class="button button-primary action-on">Turn On</button>
+          <button class="button button-secondary action-off">Turn Off</button>
+          <button class="button button-ghost action-refresh">Refresh</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

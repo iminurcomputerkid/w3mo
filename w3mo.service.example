@@ -1,0 +1,16 @@
+[Unit]
+Description=w3mo WeMo Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=<USER>
+WorkingDirectory=<APP_DIR>
+Environment="WEMO_HOST=0.0.0.0"
+Environment="WEMO_PORT=8000"
+ExecStart=<APP_DIR>/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
